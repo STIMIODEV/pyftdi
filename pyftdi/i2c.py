@@ -314,6 +314,65 @@ class I2cController:
             raise ValueError('Invalid retry count')
         self._retry_count = count
 
+    def configure_from_usb_id(self, vendor, product, **kwargs):
+        """Configure the FTDI interface as a I2c master using USB ID
+
+           :param int vendor: USB vendor id
+           :param int product: USB product id
+           :param kwargs: options to configure the I2C bus
+
+           Accepted options:
+
+           * ``frequency`` float value the I2C bus frequency in Hz
+           * ``clockstretching`` boolean value to enable clockstreching.
+             xD5 (GPIOL1) pin should be connected to xD0 (SCK)
+        """
+        for k in ('direction', 'initial'):
+            if k in kwargs:
+                del kwargs[k]
+        if 'frequency' in kwargs:
+            frequency = kwargs['frequency']
+            del kwargs['frequency']
+        else:
+            frequency = self.DEFAULT_BUS_FREQUENCY
+        # Fix frequency for 3-phase clock
+        if frequency <= 100E3:
+            timings = self.I2C_100K
+        elif frequency <= 400E3:
+            timings = self.I2C_100K
+        else:
+            timings = self.I2C_100K
+        if 'clockstretching' in kwargs:
+            clkstrch = bool(kwargs['clockstretching'])
+            del kwargs['clockstretching']
+        else:
+            clkstrch = False
+        ck_hd_sta = self._compute_delay_cycles(timings.t_hd_sta)
+        ck_su_sta = self._compute_delay_cycles(timings.t_su_sta)
+        ck_su_sto = self._compute_delay_cycles(timings.t_su_sto)
+        ck_buf = self._compute_delay_cycles(timings.t_buf)
+        ck_idle = max(ck_su_sta, ck_buf)
+        self._ck_delay = ck_buf
+        self._start = (self._data_lo * ck_hd_sta +
+                       self._clk_lo_data_lo * ck_hd_sta)
+        self._stop = (self._clk_lo_data_lo * ck_hd_sta +
+                      self._data_lo*ck_su_sto +
+                      self._idle*ck_idle)
+        frequency = (3.0*frequency)/2.0
+        self._frequency = self._ftdi.open_mpsse(
+            vendor=vendor, product=product,
+            direction=self._direction, initial=self.IDLE,
+            frequency=frequency, **kwargs)
+        self._tx_size, self._rx_size = self._ftdi.fifo_sizes
+        self._ftdi.enable_adaptive_clock(clkstrch)
+        self._ftdi.enable_3phase_clock(True)
+        try:
+            self._ftdi.enable_drivezero_mode(self.SCL_BIT |
+                                             self.SDA_O_BIT |
+                                             self.SDA_I_BIT)
+        except FtdiFeatureError:
+            self._tristate = (Ftdi.SET_BITS_LOW, self.LOW, self.SCL_BIT)
+
     def configure(self, url, **kwargs):
         """Configure the FTDI interface as a I2c master.
 
